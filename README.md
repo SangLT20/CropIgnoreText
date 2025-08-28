@@ -1,0 +1,2 @@
+# CropIgnoreText
+CropIgnoreText
