@@ -1,0 +1,233 @@
+﻿<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Web Walkie-Talkie</title>
+    <!-- SignalR client -->
+    <script src="https://cdn.jsdelivr.net/npm/@microsoft/signalr@9.0.6/dist/browser/signalr.min.js"></script>
+    <style>
+        body {
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+            margin: 24px;
+        }
+
+        .row {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin: 8px 0;
+            flex-wrap: wrap;
+        }
+
+        input[type=text] {
+            padding: 8px;
+            min-width: 280px;
+        }
+
+        button {
+            padding: 10px 14px;
+            border: 0;
+            border-radius: 10px;
+            cursor: pointer;
+        }
+
+        #ptt {
+            font-size: 18px;
+            border-radius: 14px;
+            padding: 14px 18px;
+        }
+
+        #status {
+            color: #555;
+        }
+
+        .small {
+            font-size: 12px;
+            color: #777
+        }
+    </style>
+</head>
+<body>
+    <h1>Web Walkie-Talkie</h1>
+
+    <div class="row">
+        <div><strong>Your ID:</strong> <span id="selfId">...</span></div>
+        <div id="status"></div>
+    </div>
+
+    <div class="row">
+        <input id="peerId" type="text" placeholder="Peer ID (ConnectionId) của người kia" />
+        <button id="btnCall">Kết nối</button>
+        <button id="btnHangup" disabled>Ngắt</button>
+    </div>
+
+    <div class="row">
+        <button style="display: none;" id="ptt" disabled>🎙️ Nhấn & giữ để nói</button>
+        <label><input id="echo" type="checkbox"> Nghe tiếng mình (echo test)</label>
+    </div>
+
+    <div class="row small">
+        Chia sẻ “Your ID” cho người kia. Mỗi bên nhập ID của đối phương rồi bấm “Kết nối”. Khi kết nối xong, giữ nút để nói (push-to-talk).
+    </div>
+
+    <audio id="remoteAudio" autoplay playsinline></audio>
+    <audio id="localAudio" autoplay playsinline muted></audio>
+
+    <script>
+    // ====== DOM refs ======
+    const selfIdSpan = document.getElementById('selfId');
+    const statusEl = document.getElementById('status');
+    const peerIdInput = document.getElementById('peerId');
+    const btnCall = document.getElementById('btnCall');
+    const btnHangup = document.getElementById('btnHangup');
+    const pttBtn = document.getElementById('ptt');
+    const remoteAudio = document.getElementById('remoteAudio');
+    const localAudio = document.getElementById('localAudio');
+    const echoCheckbox = document.getElementById('echo');
+
+    // ====== State ======
+    let connection;              // SignalR connection
+    let pc;                      // RTCPeerConnection
+    let localStream;             // MediaStream (mic)
+    let targetId = null;         // The peer we call
+    let isCaller = false;
+
+    function logStatus(msg) { statusEl.textContent = `— ${msg}`; }
+
+    async function init() {
+      // 1) Kết nối SignalR
+      connection = new signalR.HubConnectionBuilder()
+        .withUrl("/signalr")
+        .withAutomaticReconnect()
+        .build();
+
+      // Handlers từ server
+      connection.on("ReceiveOffer", async (fromId, sdp) => {
+        targetId = fromId;
+        await ensurePeerConnection();
+
+        await pc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp }));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        await connection.invoke("SendAnswer", targetId, answer.sdp);
+        logStatus("Đã gửi Answer");
+      });
+
+      connection.on("ReceiveAnswer", async (fromId, sdp) => {
+        await pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp }));
+        logStatus("Đã nhận Answer");
+      });
+
+      connection.on("ReceiveIceCandidate", async (_fromId, candidate) => {
+        try {
+          await pc.addIceCandidate(candidate ? new RTCIceCandidate(JSON.parse(candidate)) : null);
+        } catch (e) {
+          console.error("addIceCandidate error", e);
+        }
+      });
+
+      await connection.start();
+      const myId = await connection.invoke("GetConnectionId");
+      selfIdSpan.textContent = myId;
+      logStatus("SignalR connected");
+
+      // 2) Lấy mic
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      localAudio.srcObject = localStream; // để kiểm tra echo nếu bật
+      pttBtn.disabled = false;
+
+      // Push-to-talk: bật/tắt track khi giữ/nhả nút
+      const track = localStream.getAudioTracks()[0];
+      track.enabled = true;
+
+      const press = () => { track.enabled = true; pttBtn.textContent = "🔊 Đang nói..."; };
+      const release = () => { track.enabled = false; pttBtn.textContent = "🎙️ Nhấn & giữ để nói"; };
+
+      pttBtn.addEventListener('mousedown', press);
+      pttBtn.addEventListener('mouseup', release);
+      pttBtn.addEventListener('mouseleave', release);
+      pttBtn.addEventListener('touchstart', (e)=>{ e.preventDefault(); press(); }, {passive:false});
+      pttBtn.addEventListener('touchend', (e)=>{ e.preventDefault(); release(); });
+
+      echoCheckbox.addEventListener('change', ()=>{
+        localAudio.muted = !echoCheckbox.checked;
+      });
+
+      btnCall.onclick = startCall;
+      btnHangup.onclick = hangup;
+    }
+
+    async function ensurePeerConnection() {
+      if (pc) return;
+
+      pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" } // STUN công khai
+        ]
+      });
+
+      // Gửi ICE lên đối phương qua SignalR
+      pc.onicecandidate = async (e) => {
+        if (e.candidate && targetId) {
+          await connection.invoke("SendIceCandidate", targetId, JSON.stringify(e.candidate));
+        }
+      };
+
+      // Nhận stream từ peer
+      pc.ontrack = (e) => {
+        remoteAudio.srcObject = e.streams[0];
+      };
+
+      // Thêm track local
+      localStream.getTracks().forEach(t => pc.addTrack(t, localStream));
+
+      pc.onconnectionstatechange = () => {
+        const st = pc.connectionState;
+        logStatus(`WebRTC: ${st}`);
+        if (st === "connected") {
+          btnHangup.disabled = false;
+        }
+        if (["disconnected","failed","closed"].includes(st)) {
+          btnHangup.disabled = true;
+        }
+      };
+    }
+
+    async function startCall() {
+      targetId = (peerIdInput.value || "").trim();
+      if (!targetId) { alert("Nhập Peer ID của người kia"); return; }
+
+      isCaller = true;
+      await ensurePeerConnection();
+
+      const offer = await pc.createOffer({ offerToReceiveAudio: true });
+      await pc.setLocalDescription(offer);
+
+      await connection.invoke("SendOffer", targetId, offer.sdp);
+      logStatus("Đã gửi Offer");
+    }
+
+    async function hangup() {
+      try { pc?.getSenders().forEach(s => s.track && s.track.stop()); } catch {}
+      try { pc?.close(); } catch {}
+      pc = null;
+      targetId = null;
+      btnHangup.disabled = true;
+      logStatus("Đã ngắt");
+      // Lấy mic lại để tiếp tục PTT sau khi ngắt
+      if (!localStream || localStream.getTracks().every(t => t.readyState === "ended")) {
+        localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        localAudio.srcObject = localStream;
+      }
+    }
+
+    init().catch(err => {
+      console.error(err);
+      logStatus("Lỗi khởi tạo: " + err.message);
+      alert(err);
+    });
+    </script>
+</body>
+</html>
