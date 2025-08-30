@@ -3,7 +3,6 @@ using Microsoft.AspNetCore.SignalR;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// (Tùy chọn) Nếu bạn host frontend chỗ khác, bật CORS:
 // builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
 //     .AllowAnyHeader().AllowAnyMethod().AllowCredentials()
 //     .SetIsOriginAllowed(_ => true)));
@@ -24,8 +23,24 @@ app.Run();
 
 public class SignalingHub : Hub
 {
+    private static Dictionary<string, string> ConnectedUsers = new();
     public string GetConnectionId() => Context.ConnectionId;
+    public override Task OnConnectedAsync()
+    {
+        string userName = Context.GetHttpContext().Request.Query["username"];
+        ConnectedUsers[Context.ConnectionId] = userName;
 
+        // Send updated user list to everyone
+        Clients.All.SendAsync("UserListUpdated", ConnectedUsers);
+
+        return base.OnConnectedAsync();
+    }
+    public override Task OnDisconnectedAsync(Exception exception)
+    {
+        ConnectedUsers.Remove(Context.ConnectionId);
+        Clients.All.SendAsync("UserListUpdated", ConnectedUsers);
+        return base.OnDisconnectedAsync(exception);
+    }
     public async Task SendOffer(string targetConnectionId, string sdp)
         => await Clients.Client(targetConnectionId)
             .SendAsync("ReceiveOffer", Context.ConnectionId, sdp);

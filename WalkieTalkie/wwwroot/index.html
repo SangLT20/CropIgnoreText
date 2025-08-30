@@ -50,25 +50,27 @@
 </head>
 <body>
     <h1>Web Walkie-Talkie</h1>
-
+    <ul id="userList"></ul>
     <div class="row">
-        <div><strong>Your ID:</strong> <span id="selfId">...</span></div>
+        <div>
+          <strong>Your ID:</strong> 
+          <span id="selfId">...</span></div>
         <div id="status"></div>
     </div>
 
     <div class="row">
-        <input id="peerId" type="text" placeholder="Peer ID (ConnectionId) của người kia" />
-        <button id="btnCall">Kết nối</button>
-        <button id="btnHangup" disabled>Ngắt</button>
+        <input id="peerId" type="text" placeholder="Peer ID (ConnectionId) your partner" />
+        <button id="btnCall">Connect</button>
+        <button id="btnHangup" disabled>Disconnect</button>
     </div>
 
     <div class="row">
         <button style="display: none;" id="ptt" disabled>🎙️ Nhấn & giữ để nói</button>
-        <label><input id="echo" type="checkbox"> Nghe tiếng mình (echo test)</label>
+        <label><input id="echo" type="checkbox"> echo test</label>
     </div>
 
     <div class="row small">
-        Chia sẻ “Your ID” cho người kia. Mỗi bên nhập ID của đối phương rồi bấm “Kết nối”. Khi kết nối xong, giữ nút để nói (push-to-talk).
+        Share “Your ID” with the other person. Each party enters the other person’s ID and presses “Connect”.
     </div>
 
     <audio id="remoteAudio" autoplay playsinline></audio>
@@ -97,10 +99,25 @@
 
     async function init() {
       // 1) Kết nối SignalR
+      // connection = new signalR.HubConnectionBuilder()
+      //   .withUrl("/signalr")
+      //   .withAutomaticReconnect()
+      //   .build();
       connection = new signalR.HubConnectionBuilder()
-        .withUrl("/signalr")
-        .withAutomaticReconnect()
+        .withUrl("/signalr?username=" + prompt("Enter your name:"))
         .build();
+
+      connection.on("UserListUpdated", users => {
+          const list = document.getElementById("userList");
+          list.innerHTML = "";
+          for (const [id, name] of Object.entries(users)) {
+              const li = document.createElement("li");
+              li.textContent = name;
+              li.style.cursor = "pointer";
+              li.onclick = () => startCall(id); // when clicked, connect via WebRTC
+              list.appendChild(li);
+          }
+      });
 
       // Handlers từ server
       connection.on("ReceiveOffer", async (fromId, sdp) => {
@@ -165,6 +182,7 @@
       pc = new RTCPeerConnection({
         iceServers: [
           { urls: "stun:stun.l.google.com:19302" } // STUN công khai
+          ,{ urls: "turn:54.179.30.255:3478", username: "webrtcuser", credential: "sangtest2025" }
         ]
       });
 
@@ -195,9 +213,10 @@
       };
     }
 
-    async function startCall() {
+    async function startCall(targetId) {
+      console.log("Calling", targetId);
       targetId = (peerIdInput.value || "").trim();
-      if (!targetId) { alert("Nhập Peer ID của người kia"); return; }
+      if (!targetId) { alert("Enter the other person's Peer ID"); return; }
 
       isCaller = true;
       await ensurePeerConnection();
@@ -206,7 +225,7 @@
       await pc.setLocalDescription(offer);
 
       await connection.invoke("SendOffer", targetId, offer.sdp);
-      logStatus("Đã gửi Offer");
+      logStatus("Offer Sent");
     }
 
     async function hangup() {
@@ -215,7 +234,7 @@
       pc = null;
       targetId = null;
       btnHangup.disabled = true;
-      logStatus("Đã ngắt");
+      logStatus("Disconnected");
       // Lấy mic lại để tiếp tục PTT sau khi ngắt
       if (!localStream || localStream.getTracks().every(t => t.readyState === "ended")) {
         localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -225,7 +244,7 @@
 
     init().catch(err => {
       console.error(err);
-      logStatus("Lỗi khởi tạo: " + err.message);
+      logStatus("Error: " + err.message);
       alert(err);
     });
     </script>
