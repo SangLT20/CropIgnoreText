@@ -215,7 +215,7 @@
 
     async function startCall(targetId) {
       console.log("Calling", targetId);
-      targetId = (peerIdInput.value || "").trim();
+      targetId = targetId ?? (peerIdInput.value || "").trim();
       if (!targetId) { alert("Enter the other person's Peer ID"); return; }
 
       isCaller = true;
