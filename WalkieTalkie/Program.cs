@@ -28,7 +28,7 @@ public class SignalingHub : Hub
     public override Task OnConnectedAsync()
     {
         string userName = Context.GetHttpContext().Request.Query["username"];
-        ConnectedUsers[Context.ConnectionId] = userName;
+        ConnectedUsers[Context.ConnectionId] = userName + " " + DateTime.Now.ToString("yyyyMMdd HH:mm:ss");
 
         // Send updated user list to everyone
         Clients.All.SendAsync("UserListUpdated", ConnectedUsers);
